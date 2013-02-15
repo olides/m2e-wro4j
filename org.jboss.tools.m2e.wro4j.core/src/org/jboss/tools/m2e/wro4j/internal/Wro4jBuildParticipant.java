@@ -117,6 +117,13 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 			if (getMojoExecution().getMojoDescriptor().getFullGoalName()
 					.contains("jshint")) {
 				stream.println("Running jshint goal...");
+				BuildContext buildContext = getBuildContext();
+				if (notCleanFullBuild(kind)
+						&& !wroResourceChangeDetected(mojoExecution,
+								buildContext)) {
+					stream.println("Canceling run, no change detected");
+					return null;
+				}
 				if (monitor != null) {
 					String taskName = NLS.bind("Invoking {0} on {1}",
 							getMojoExecution().getMojoDescriptor()
@@ -208,7 +215,7 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 			if (reportFile.exists()) {
 				// Delete existing markers accross builds.
 				deleteProjectJSHintMarkers(project);
-				
+
 				stream.println("FOUND File " + reportFile.getAbsolutePath());
 				DocumentBuilderFactory docBuilderFactory = DocumentBuilderFactory
 						.newInstance();
@@ -260,7 +267,6 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 		}
 	}
 
-	@SuppressWarnings("restriction")
 	private void addErrorMarker(IProject project, String fileName,
 			String reason, String evidence, int line, int column,
 			MessageConsoleStream stream) {
@@ -268,18 +274,24 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 			IFile file = project.getFile(fileName);
 
 			if (file == null || !file.exists()) {
-				StringBuilder webAppPath = new StringBuilder("src")
-						.append(File.separator).append("main")
-						.append(File.separator).append("webapp");
-				File errorWebAppFile = new File(webAppPath.toString(), fileName);
-				stream.println("error file location "
-						+ errorWebAppFile.getPath());
+				File contextFolder = getFolder(this.getMojoExecution(),
+						"contextFolder");
+				// stream.println("ContextFolder: " +
+				// contextFolder.getAbsolutePath());
 
-				file = project.getFile(errorWebAppFile.getPath());
+				File errorWebAppFile = new File(contextFolder, fileName);
+				// stream.println("error file location "
+				// + errorWebAppFile.getPath());
+
+				IPath errorWebAppPath = Path.fromOSString(errorWebAppFile
+						.getPath());
+				IPath relativeErrorPath = errorWebAppPath
+						.makeRelativeTo(project.getLocation());
+
+				file = project.getFile(relativeErrorPath);
 			}
 
-			String message = MessageFormat.format("{0} - evidence: \"{1}\"",
-					reason, evidence);
+			
 			IResource markerResource = null;
 			if (file != null && file.exists()) {
 				markerResource = file;
@@ -288,7 +300,7 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 						+ file.getFullPath().toPortableString());
 				markerResource = project;
 			}
-			createJSHintMarker(markerResource, message, IMarker.SEVERITY_ERROR,
+			createJSHintMarker(markerResource, reason, IMarker.SEVERITY_ERROR,
 					line);
 			stream.println(MessageFormat
 					.format("File: {0},\nline: {1}\ncolumn: {2}\nreason: {3}\nevidence: \"{4}\"\n",
