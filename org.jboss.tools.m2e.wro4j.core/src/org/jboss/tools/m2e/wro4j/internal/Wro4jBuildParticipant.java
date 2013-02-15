@@ -35,7 +35,6 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.Path;
-import org.eclipse.jst.ws.internal.common.ResourceUtils;
 import org.eclipse.m2e.core.MavenPlugin;
 import org.eclipse.m2e.core.embedder.IMaven;
 import org.eclipse.m2e.core.project.IMavenProjectFacade;
@@ -54,6 +53,8 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
+
+	private static final String WROJ_JSHINT_MARKER = "org.jboss.tools.m2e.wro4j.internal.jshintmarker";
 
 	private static final Pattern WRO4J_FILES_PATTERN = Pattern
 			.compile("^(\\/?.*\\/)?wro\\.(xml|groovy|properties)$");
@@ -80,6 +81,17 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 		MessageConsole myConsole = new MessageConsole(name, null);
 		conMan.addConsoles(new IConsole[] { myConsole });
 		return myConsole;
+	}
+
+	private IMarker[] findJSHintMarkers(IResource target) throws CoreException {
+		return target.findMarkers(WROJ_JSHINT_MARKER, true,
+				IResource.DEPTH_INFINITE);
+	}
+
+	private void deleteProjectJSHintMarkers(IProject project)
+			throws CoreException {
+		project.deleteMarkers(WROJ_JSHINT_MARKER, true,
+				IResource.DEPTH_INFINITE);
 	}
 
 	@Override
@@ -194,6 +206,9 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 			MessageConsoleStream stream) {
 		try {
 			if (reportFile.exists()) {
+				// Delete existing markers accross builds.
+				deleteProjectJSHintMarkers(project);
+				
 				stream.println("FOUND File " + reportFile.getAbsolutePath());
 				DocumentBuilderFactory docBuilderFactory = DocumentBuilderFactory
 						.newInstance();
@@ -250,71 +265,34 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 			String reason, String evidence, int line, int column,
 			MessageConsoleStream stream) {
 		try {
-			File errorFile = new File(fileName);
 			IFile file = project.getFile(fileName);
-			IMarker marker = null;
 
 			if (file == null || !file.exists()) {
-				File errorWebAppFile = new File("src/main/webapp", fileName);
+				StringBuilder webAppPath = new StringBuilder("src")
+						.append(File.separator).append("main")
+						.append(File.separator).append("webapp");
+				File errorWebAppFile = new File(webAppPath.toString(), fileName);
 				stream.println("error file location "
 						+ errorWebAppFile.getPath());
 
 				file = project.getFile(errorWebAppFile.getPath());
-
-				/*
-				 * IPath sourcePath =
-				 * ResourceUtils.getJavaSourceLocation(project);
-				 * 
-				 * stream.println("SourcePath: " +
-				 * sourcePath.toFile().getAbsolutePath());
-				 * 
-				 * String parentFolderName = errorFile.getParent(); if
-				 * (parentFolderName.startsWith("/") ||
-				 * parentFolderName.startsWith("\\")){ parentFolderName =
-				 * parentFolderName.substring(1); }
-				 * stream.println("error file parent folder: " +
-				 * parentFolderName); sourcePath.append(parentFolderName);
-				 * 
-				 * IPath sourcedErrorPath =
-				 * sourcePath.append(errorFile.getName());
-				 * stream.println("computed path: " +
-				 * sourcedErrorPath.toFile().getAbsolutePath()); file =
-				 * project.getWorkspace().getRoot().getFile(sourcedErrorPath);
-				 */
 			}
 
-			boolean skipMarker = false;
 			String message = MessageFormat.format("{0} - evidence: \"{1}\"",
 					reason, evidence);
+			IResource markerResource = null;
 			if (file != null && file.exists()) {
-				IMarker[] existingMarkers = file.findMarkers(IMarker.PROBLEM,
-						false, IResource.DEPTH_ONE);
-				for (IMarker existingMarker : existingMarkers) {
-					Integer severity = (Integer) existingMarker
-							.getAttribute(IMarker.SEVERITY);
-					int lineNumber = (Integer) existingMarker
-							.getAttribute(IMarker.LINE_NUMBER);
-
-					if (lineNumber == line
-							&& severity == IMarker.SEVERITY_ERROR && message.equals(existingMarker.getAttribute(IMarker.MESSAGE))) {
-						skipMarker = true;
-					}						
-				}
-				if (!skipMarker)
-					marker = file.createMarker(IMarker.PROBLEM);
+				markerResource = file;
 			} else {
 				stream.println("Unable to retrieve project's file: "
 						+ file.getFullPath().toPortableString());
-				marker = project.createMarker(IMarker.PROBLEM);
+				markerResource = project;
 			}
-			if (!skipMarker) {
-				marker.setAttribute(IMarker.MESSAGE, message);
-				marker.setAttribute(IMarker.SEVERITY, IMarker.SEVERITY_ERROR);
-				marker.setAttribute(IMarker.LINE_NUMBER, line);
-				stream.println(MessageFormat
-						.format("File: {0},\nline: {1}\ncolumn: {2}\nreason: {3}\nevidence: \"{4}\"\n",
-								fileName, line, column, reason, evidence));				
-			}
+			createJSHintMarker(markerResource, message, IMarker.SEVERITY_ERROR,
+					line);
+			stream.println(MessageFormat
+					.format("File: {0},\nline: {1}\ncolumn: {2}\nreason: {3}\nevidence: \"{4}\"\n",
+							fileName, line, column, reason, evidence));
 		} catch (Exception e) {
 			stream.println("Unable to create marker " + e.getMessage());
 			StringWriter writer = new StringWriter();
@@ -322,6 +300,15 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 			e.printStackTrace(pWriter);
 			stream.println(writer.toString());
 		}
+	}
+
+	private IMarker createJSHintMarker(IResource resource, String message,
+			int severity, int line) throws CoreException {
+		IMarker marker = resource.createMarker(WROJ_JSHINT_MARKER);
+		marker.setAttribute(IMarker.MESSAGE, message);
+		marker.setAttribute(IMarker.SEVERITY, severity);
+		marker.setAttribute(IMarker.LINE_NUMBER, line);
+		return marker;
 	}
 
 	private File getFolder(MojoExecution mojoExecution, String folderName)
