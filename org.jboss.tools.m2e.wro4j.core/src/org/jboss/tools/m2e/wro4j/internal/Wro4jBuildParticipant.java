@@ -13,12 +13,10 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.text.MessageFormat;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.apache.maven.plugin.MojoExecution;
 import org.codehaus.plexus.util.Scanner;
@@ -46,11 +44,10 @@ import org.eclipse.ui.console.IConsole;
 import org.eclipse.ui.console.IConsoleManager;
 import org.eclipse.ui.console.MessageConsole;
 import org.eclipse.ui.console.MessageConsoleStream;
+import org.jboss.tools.m2e.wro4j.internal.jshint.JSHintParser;
+import org.jboss.tools.m2e.wro4j.internal.jshint.Lint;
+import org.jboss.tools.m2e.wro4j.internal.jshint.LintFileIssue;
 import org.sonatype.plexus.build.incremental.BuildContext;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
 
 public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 
@@ -111,19 +108,20 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 		try {
 			MessageConsole msgConsole = findConsole("Wro4J");
 
-			msgConsole.activate();
 			stream = msgConsole.newMessageStream();
 
 			if (getMojoExecution().getMojoDescriptor().getFullGoalName()
 					.contains("jshint")) {
-				stream.println("Running jshint goal...");
 				BuildContext buildContext = getBuildContext();
 				if (notCleanFullBuild(kind)
 						&& !wroResourceChangeDetected(mojoExecution,
 								buildContext)) {
-					stream.println("Canceling run, no change detected");
 					return null;
 				}
+				IMavenProjectFacade facade = getMavenProjectFacade();
+				IProject project = facade.getProject();
+
+				stream.println("Running jshint goal on " + project.getName() + "...");
 				if (monitor != null) {
 					String taskName = NLS.bind("Invoking {0} on {1}",
 							getMojoExecution().getMojoDescriptor()
@@ -134,31 +132,24 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 				IMaven maven = MavenPlugin.getMaven();
 				maven.execute(getSession(), getMojoExecution(), monitor);
 
-				IMavenProjectFacade facade = getMavenProjectFacade();
-				IProject project = facade.getProject();
-
-				String target = facade.getMavenProject().getBuild()
-						.getDirectory();
-				File reportFile = new File(target, "wro4j-reports"
-						+ File.separator + "jshint.xml");
-				parseJsHintReportFile(project, reportFile, stream);
-				stream.write("Done\n");
+				File reportFile = getJSHintReportFile();
+				if (parseJsHintReportFile(project, reportFile, stream)) {
+					msgConsole.activate();
+				}
+				stream.println("Done\n");
 			} else {
 				restoreConfig = true;
 				BuildContext buildContext = getBuildContext();
 				if (notCleanFullBuild(kind)
 						&& !wroResourceChangeDetected(mojoExecution,
 								buildContext)) {
-					stream.println("No change detected");
 					return null;
 				}
 
 				originalConfiguration = mojoExecution.getConfiguration();
 
-				stream.write("Running goal ");
 				stream.write(getMojoExecution().getMojoDescriptor()
 						.getFullGoalName());
-				stream.write("...\n");
 				File destinationFolder = getFolder(mojoExecution,
 						DESTINATION_FOLDER);
 				File jsDestinationFolder = getFolder(mojoExecution,
@@ -209,61 +200,41 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 		return result;
 	}
 
-	private void parseJsHintReportFile(IProject project, File reportFile,
+	private File getJSHintReportFile() {
+		File reportFile = null;
+		try {
+			reportFile = getFolder(getMojoExecution(), "reportFile");
+		} catch (Exception e) {
+			reportFile = null;
+		}
+
+		if (reportFile == null || !reportFile.exists()) {
+			String target = getMavenProjectFacade().getMavenProject()
+					.getBuild().getDirectory();
+			reportFile = new File(target, "wro4j-reports" + File.separator
+					+ "jshint.xml");
+		}
+
+		return reportFile;
+	}
+
+	private boolean parseJsHintReportFile(IProject project, File reportFile,
 			MessageConsoleStream stream) {
 		try {
-			if (reportFile.exists()) {
-				// Delete existing markers accross builds.
-				deleteProjectJSHintMarkers(project);
-
-				stream.println("FOUND File " + reportFile.getAbsolutePath());
-				DocumentBuilderFactory docBuilderFactory = DocumentBuilderFactory
-						.newInstance();
-				DocumentBuilder builder = docBuilderFactory
-						.newDocumentBuilder();
-				Document doc = builder.parse(reportFile);
-				Element rootElement = doc.getDocumentElement();
-				NodeList childNodes = rootElement.getChildNodes();
-				if (childNodes != null) {
-					int len = childNodes.getLength();
-					for (int i = 0; i < len; i++) {
-						Node n = childNodes.item(i);
-						if (n.getNodeType() == Node.ELEMENT_NODE
-								&& n.getNodeName().equals("file")) {
-							Element fileElem = (Element) n;
-							String fileName = fileElem.getAttribute("name");
-							NodeList fileChildren = fileElem.getChildNodes();
-							if (fileChildren != null) {
-								int fileChildLen = fileChildren.getLength();
-								for (int fileIdx = 0; fileIdx < fileChildLen; fileIdx++) {
-									Node cn = fileChildren.item(fileIdx);
-									if (cn.getNodeType() == Node.ELEMENT_NODE
-											&& cn.getNodeName().equals("issue")) {
-										Element issueElem = (Element) cn;
-										String reason = issueElem
-												.getAttribute("reason");
-										String evidence = issueElem
-												.getAttribute("evidence");
-										int line = Integer.parseInt(issueElem
-												.getAttribute("line"));
-										int col = Integer.parseInt(issueElem
-												.getAttribute("char"));
-										addErrorMarker(project, fileName,
-												reason, evidence, line, col,
-												stream);
-									}
-								}
-							}
-						}
-					}
-				}
-			} else {
-				stream.println("ReportFile " + reportFile.getAbsolutePath()
-						+ " not found.");
+			deleteProjectJSHintMarkers(project);
+			JSHintParser parser = new JSHintParser();
+			Lint lint = parser.parse(reportFile);
+			final List<LintFileIssue> issues = lint.getIssues();
+			for (LintFileIssue issue : issues) {
+				addErrorMarker(project, issue.getFile().getName(),
+						issue.getReason(), issue.getEvidence(),
+						issue.getLine(), issue.getColumn(), stream);
 			}
+			return issues.size() > 0;
 		} catch (Exception parseEx) {
 			stream.println("Error while parsing result file "
 					+ parseEx.getMessage());
+			return true;
 		}
 	}
 
@@ -291,7 +262,6 @@ public class Wro4jBuildParticipant extends MojoExecutionBuildParticipant {
 				file = project.getFile(relativeErrorPath);
 			}
 
-			
 			IResource markerResource = null;
 			if (file != null && file.exists()) {
 				markerResource = file;
